@@ -1,0 +1,54 @@
+// -*- go -*-
+//
+// Copyright (c) 2021-2023 Markku Rossi
+//
+// All rights reserved.
+//
+
+package binary
+
+// GetUint gets a MSB-encoded unsigned integer from the argument
+// buffer. The size of the result number is determined by the length
+// of the input buffer.
+func GetUint(d []byte) uint {
+	resultType := make(uint, len(d)*8)
+
+	var result resultType
+	for i := 0; i < len(d); i++ {
+		result <<= 8
+		result |= resultType(d[i])
+	}
+	return result
+}
+
+// PutUint puts the unsigned integer v to the buffer d starting from
+// the offset offset in MSB-order. The number of bytes encoded is
+// determined by the size of the input value v.
+func PutUint(d []byte, offset int, v uint) []byte {
+	bytes := size(v) / 8
+
+	for i := 0; i < bytes; i++ {
+		d[offset+bytes-1-i] = byte(v & 0xff)
+		v >>= 8
+	}
+	return d
+}
+
+func GetUint256(d [32]byte) uint256 {
+  return uint256(d[0])<<248 | uint256(d[1])<<240 | uint256(d[2])<<232 | uint256(d[3])<<224 | uint256(d[4])<<216 | uint256(d[5])<<208 | uint256(d[6])<<200| uint256(d[7])<<192 | uint256(d[8])<<184 | uint256(d[9])<<176 | uint256(d[10])<<168 | uint256(d[11])<<160 | uint256(d[12])<<152 | uint256(d[13])<<144 | uint256(d[14])<<136 | uint256(d[15])<<128 | uint256(d[16])<<120 | uint256(d[17])<<112 | uint256(d[18])<<104 | uint256(d[19])<<96 | uint256(d[20])<<88 | uint256(d[21])<<80 | uint256(d[22])<<72 | uint256(d[23])<<64 | uint256(d[24])<<56 | uint256(d[25])<<48 | uint256(d[26])<<40 | uint256(d[27])<<32 | uint256(d[28])<<24 | uint256(d[29])<<16 | uint256(d[30])<<8 | uint256(d[31])
+}
+
+// GetUint32 gets a MSB-encoded uint32 value from the argument buffer.
+func GetUint32(d []byte) uint32 {
+	return uint32(d[0])<<24 | uint32(d[1])<<16 | uint32(d[2])<<8 | uint32(d[3])
+}
+
+// PutUint32 puts the uint32 value v to the buffer d starting from the
+// offset offset in MSB-order.
+func PutUint32(d []byte, offset int, v uint32) []byte {
+	d[offset+0] = byte(v >> 24)
+	d[offset+1] = byte(v >> 16)
+	d[offset+2] = byte(v >> 8)
+	d[offset+3] = byte(v)
+	return d
+}

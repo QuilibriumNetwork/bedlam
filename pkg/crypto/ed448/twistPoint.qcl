@@ -1,0 +1,133 @@
+package ed448
+
+import (
+	"fmt"
+)
+
+type twistPoint struct{ x, y, z, ta, tb Elt }
+
+type preTwistPointAffine struct{ addYX, subYX, dt2 Elt }
+
+type preTwistPointProy struct {
+	preTwistPointAffine
+	z2 Elt
+}
+
+func (P *twistPoint) String() string {
+	return fmt.Sprintf("x: %v\ny: %v\nz: %v\nta: %v\ntb: %v", P.x, P.y, P.z, P.ta, P.tb)
+}
+
+// cneg conditionally negates the point if b=1.
+func (P *twistPoint) cneg(b uint) {
+	t := &Elt{}
+	Neg(t, &P.x)
+	Cmov(&P.x, t, b)
+	Neg(t, &P.ta)
+	Cmov(&P.ta, t, b)
+}
+
+// Double updates P with 2P.
+func (P *twistPoint) Double() {
+	// This is formula (7) from "Twisted Edwards Curves Revisited" by
+	// Hisil H., Wong K.KH., Carter G., Dawson E. (2008)
+	// https://doi.org/10.1007/978-3-540-89255-7_20
+	Px, Py, Pz, Pta, Ptb := &P.x, &P.y, &P.z, &P.ta, &P.tb
+	a, b, c, e, f, g, h := Px, Py, Pz, Pta, Px, Py, Ptb
+	Add(e, Px, Py) // x+y
+	Sqr(a, Px)     // A = x^2
+	Sqr(b, Py)     // B = y^2
+	Sqr(c, Pz)     // z^2
+	Add(c, c, c)   // C = 2*z^2
+	Add(h, a, b)   // H = A+B
+	Sqr(e, e)      // (x+y)^2
+	Sub(e, e, h)   // E = (x+y)^2-A-B
+	Sub(g, b, a)   // G = B-A
+	Sub(f, c, g)   // F = C-G
+	Mul(Pz, f, g)  // Z = F * G
+	Mul(Px, e, f)  // X = E * F
+	Mul(Py, g, h)  // Y = G * H, T = E * H
+}
+
+// mixAdd calculates P= P+Q, where Q is a precomputed point with Z_Q = 1.
+func (P *twistPoint) mixAddZ1(Q *preTwistPointAffine) {
+	Add(&P.z, &P.z, &P.z) // D = 2*z1 (z2=1)
+	P.coreAddition(Q)
+}
+
+// coreAddition calculates P=P+Q for curves with A=-1.
+func (P *twistPoint) coreAddition(Q *preTwistPointAffine) {
+	// This is the formula following (5) from "Twisted Edwards Curves Revisited" by
+	// Hisil H., Wong K.KH., Carter G., Dawson E. (2008)
+	// https://doi.org/10.1007/978-3-540-89255-7_20
+	Px, Py, Pz, Pta, Ptb := &P.x, &P.y, &P.z, &P.ta, &P.tb
+	addYX2, subYX2, dt2 := &Q.addYX, &Q.subYX, &Q.dt2
+	a, b, c, d, e, f, g, h := Px, Py, &Elt{}, Pz, Pta, Px, Py, Ptb
+	Mul(c, Pta, Ptb)  // t1 = ta*tb
+	Sub(h, Py, Px)    // y1-x1
+	Add(b, Py, Px)    // y1+x1
+	Mul(a, h, subYX2) // A = (y1-x1)*(y2-x2)
+	Mul(b, b, addYX2) // B = (y1+x1)*(y2+x2)
+	Mul(c, c, dt2)    // C = 2*D*t1*t2
+	Sub(e, b, a)      // E = B-A
+	Add(h, b, a)      // H = B+A
+	Sub(f, d, c)      // F = D-C
+	Add(g, d, c)      // G = D+C
+	Mul(Pz, f, g)     // Z = F * G
+	Mul(Px, e, f)     // X = E * F
+	Mul(Py, g, h)     // Y = G * H, T = E * H
+}
+
+func (P *preTwistPointAffine) neg() {
+	P.addYX, P.subYX = P.subYX, P.addYX
+	Neg(&P.dt2, &P.dt2)
+}
+
+func (P *preTwistPointAffine) cneg(b int) {
+	t := &Elt{}
+	Cswap(&P.addYX, &P.subYX, uint(b))
+	Neg(t, &P.dt2)
+	Cmov(&P.dt2, t, uint(b))
+}
+
+func (P *preTwistPointAffine) cmov(Q *preTwistPointAffine, b uint) {
+	Cmov(&P.addYX, &Q.addYX, b)
+	Cmov(&P.subYX, &Q.subYX, b)
+	Cmov(&P.dt2, &Q.dt2, b)
+}
+
+// mixAdd calculates P= P+Q, where Q is a precomputed point with Z_Q != 1.
+func (P *twistPoint) mixAdd(Q *preTwistPointProy) {
+	Mul(&P.z, &P.z, &Q.z2) // D = 2*z1*z2
+	P.coreAddition(&Q.preTwistPointAffine)
+}
+
+// oddMultiples calculates T[i] = (2*i-1)P for 0 < i < len(T).
+func (P *twistPoint) oddMultiples(T []preTwistPointProy) {
+	if n := len(T); n > 0 {
+		T[0].FromTwistPoint(P)
+		_2P := *P
+		_2P.Double()
+		R := &preTwistPointProy{}
+		R.FromTwistPoint(&_2P)
+		for i := 1; i < n; i++ {
+			P.mixAdd(R)
+			T[i].FromTwistPoint(P)
+		}
+	}
+}
+
+// cmov conditionally moves Q into P if b=1.
+func (P *preTwistPointProy) cmov(Q *preTwistPointProy, b uint) {
+	P.preTwistPointAffine.cmov(&Q.preTwistPointAffine, b)
+	Cmov(&P.z2, &Q.z2, b)
+}
+
+// FromTwistPoint precomputes some coordinates of Q for missed addition.
+func (P *preTwistPointProy) FromTwistPoint(Q *twistPoint) {
+	Add(&P.addYX, &Q.y, &Q.x)         // addYX = X + Y
+	Sub(&P.subYX, &Q.y, &Q.x)         // subYX = Y - X
+	Mul(&P.dt2, &Q.ta, &Q.tb)         // T = ta*tb
+	Mul(&P.dt2, &P.dt2, &paramDTwist) // D*T
+	Add(&P.dt2, &P.dt2, &P.dt2)       // dt2 = 2*D*T
+	Add(&P.z2, &Q.z, &Q.z)            // z2 = 2*Z
+}

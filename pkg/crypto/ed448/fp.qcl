@@ -1,0 +1,298 @@
+// Package fp448 provides prime field arithmetic over GF(2^448-2^224-1).
+package ed448
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"math/big"
+	"strings"
+)
+
+// BytesLe2Hex returns an hexadecimal string of a number stored in a
+// little-endian order slice x.
+func BytesLe2Hex(x []byte) string {
+	b := &strings.Builder{}
+	b.Grow(2*len(x) + 2)
+	fmt.Fprint(b, "0x")
+	if len(x) == 0 {
+		fmt.Fprint(b, "00")
+	}
+	for i := len(x) - 1; i >= 0; i-- {
+		fmt.Fprintf(b, "%02x", x[i])
+	}
+	return b.String()
+}
+
+// BytesLe2BigInt converts a little-endian slice x into a big-endian
+// math/big.Int.
+func BytesLe2BigInt(x []byte) *big.Int {
+	n := len(x)
+	b := new(big.Int)
+	if len(x) > 0 {
+		y := make([]byte, n)
+		for i := 0; i < n; i++ {
+			y[n-1-i] = x[i]
+		}
+		b.SetBytes(y)
+	}
+	return b
+}
+
+// BytesBe2Uint64Le converts a big-endian slice x to a little-endian slice of uint64.
+func BytesBe2Uint64Le(x []byte) []uint64 {
+	l := len(x)
+	z := make([]uint64, (l+7)/8)
+	blocks := l / 8
+	for i := 0; i < blocks; i++ {
+		z[i] = binary.BigEndian.Uint64(x[l-8*(i+1):])
+	}
+	remBytes := l % 8
+	for i := 0; i < remBytes; i++ {
+		z[blocks] |= uint64(x[l-1-8*blocks-i]) << uint(8*i)
+	}
+	return z
+}
+
+// BigInt2BytesLe stores a positive big.Int number x into a little-endian slice z.
+// The slice is modified if the bitlength of x <= 8*len(z) (padding with zeros).
+// If x does not fit in the slice or is negative, z is not modified.
+func BigInt2BytesLe(z []byte, x *big.Int) {
+	xLen := (x.BitLen() + 7) >> 3
+	zLen := len(z)
+	if zLen >= xLen && x.Sign() >= 0 {
+		y := x.Bytes()
+		for i := 0; i < xLen; i++ {
+			z[i] = y[xLen-1-i]
+		}
+		for i := xLen; i < zLen; i++ {
+			z[i] = 0
+		}
+	}
+}
+
+// Uint64Le2BigInt converts a little-endian slice x into a big number.
+func Uint64Le2BigInt(x []uint64) *big.Int {
+	n := len(x)
+	b := new(big.Int)
+	var bi big.Int
+	for i := n - 1; i >= 0; i-- {
+		bi.SetUint64(x[i])
+		b.Lsh(b, 64)
+		b.Add(b, &bi)
+	}
+	return b
+}
+
+// Uint64Le2BytesLe converts a little-endian slice x to a little-endian slice of bytes.
+func Uint64Le2BytesLe(x []uint64) []byte {
+	b := make([]byte, 8*len(x))
+	n := len(x)
+	for i := 0; i < n; i++ {
+		binary.LittleEndian.PutUint64(b[i*8:], x[i])
+	}
+	return b
+}
+
+// Uint64Le2BytesBe converts a little-endian slice x to a big-endian slice of bytes.
+func Uint64Le2BytesBe(x []uint64) []byte {
+	b := make([]byte, 8*len(x))
+	n := len(x)
+	for i := 0; i < n; i++ {
+		binary.BigEndian.PutUint64(b[i*8:], x[n-1-i])
+	}
+	return b
+}
+
+// Uint64Le2Hex returns an hexadecimal string of a number stored in a
+// little-endian order slice x.
+func Uint64Le2Hex(x []uint64) string {
+	b := new(strings.Builder)
+	b.Grow(16*len(x) + 2)
+	fmt.Fprint(b, "0x")
+	if len(x) == 0 {
+		fmt.Fprint(b, "00")
+	}
+	for i := len(x) - 1; i >= 0; i-- {
+		fmt.Fprintf(b, "%016x", x[i])
+	}
+	return b.String()
+}
+
+// BigInt2Uint64Le stores a positive big.Int number x into a little-endian slice z.
+// The slice is modified if the bitlength of x <= 8*len(z) (padding with zeros).
+// If x does not fit in the slice or is negative, z is not modified.
+func BigInt2Uint64Le(z []uint64, x *big.Int) {
+	xLen := (x.BitLen() + 63) >> 6 // number of 64-bit words
+	zLen := len(z)
+	if zLen >= xLen && x.Sign() > 0 {
+		var y, yi big.Int
+		y.Set(x)
+		two64 := big.NewInt(1)
+		two64.Lsh(two64, 64).Sub(two64, big.NewInt(1))
+		for i := 0; i < xLen; i++ {
+			yi.And(&y, two64)
+			z[i] = yi.Uint64()
+			y.Rsh(&y, 64)
+		}
+	}
+	for i := xLen; i < zLen; i++ {
+		z[i] = 0
+	}
+}
+
+// Size in bytes of an element.
+const Size = 56
+
+// Elt is a prime field element.
+type Elt [Size]byte
+
+func (e Elt) String() string { return BytesLe2Hex(e[:]) }
+
+// p is the prime modulus 2^448-2^224-1.
+var p = Elt{
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+}
+
+// P returns the prime modulus 2^448-2^224-1.
+func EP() Elt { return p }
+
+// ToBytes stores in b the little-endian byte representation of x.
+func ToBytes(b []byte, x *Elt) error {
+	if len(b) != Size {
+		return errors.New("wrong size")
+	}
+	Modp(x)
+	copy(b, x[:])
+	return nil
+}
+
+// IsZero returns true if x is equal to 0.
+func IsZero(x *Elt) bool { Modp(x); return *x == Elt{} }
+
+// IsOne returns true if x is equal to 1.
+func IsOne(x *Elt) bool { Modp(x); return *x == Elt{1} }
+
+// SetOne assigns x=1.
+func SetOne(x *Elt) { *x = Elt{1} }
+
+// One returns the 1 element.
+func One() (x Elt) { x = Elt{1}; return }
+
+// Neg calculates z = -x.
+func Neg(z, x *Elt) { Sub(z, &p, x) }
+
+// Modp ensures that z is between [0,p-1].
+func Modp(z *Elt) { Sub(z, z, &p) }
+
+// InvSqrt calculates z = sqrt(x/y) iff x/y is a quadratic-residue. If so,
+// isQR = true; otherwise, isQR = false, since x/y is a quadratic non-residue,
+// and z = sqrt(-x/y).
+func InvSqrt(z, x, y *Elt) (isQR bool) {
+	// First note that x^(2(k+1)) = x^(p-1)/2 * x = legendre(x) * x
+	// so that's x if x is a quadratic residue and -x otherwise.
+	// Next, y^(6k+3) = y^(4k+2) * y^(2k+1) = y^(p-1) * y^((p-1)/2) = legendre(y).
+	// So the z we compute satisfies z^2 y = x^(2(k+1)) y^(6k+3) = legendre(x)*legendre(y).
+	// Thus if x and y are quadratic residues, then z is indeed sqrt(x/y).
+	t0, t1 := &Elt{}, &Elt{}
+	Mul(t0, x, y)         // x*y
+	Sqr(t1, y)            // y^2
+	Mul(t1, t0, t1)       // x*y^3
+	powPminus3div4(z, t1) // (x*y^3)^k
+	Mul(z, z, t0)         // z = x*y*(x*y^3)^k = x^(k+1) * y^(3k+1)
+
+	// Check if x/y is a quadratic residue
+	Sqr(t0, z)     // z^2
+	Mul(t0, t0, y) // y*z^2
+	Sub(t0, t0, x) // y*z^2-x
+	return IsZero(t0)
+}
+
+// Inv calculates z = 1/x mod p.
+func Inv(z, x *Elt) {
+	// Calculates z = x^(4k+1) = x^(p-3+1) = x^(p-2) = x^-1, where k = (p-3)/4.
+	t := &Elt{}
+	powPminus3div4(t, x) // t = x^k
+	Sqr(t, t)            // t = x^2k
+	Sqr(t, t)            // t = x^4k
+	Mul(z, t, x)         // z = x^(4k+1)
+}
+
+// powPminus3div4 calculates z = x^k mod p, where k = (p-3)/4.
+func powPminus3div4(z, x *Elt) {
+	x0, x1 := &Elt{}, &Elt{}
+	Sqr(z, x)
+	Mul(z, z, x)
+	Sqr(x0, z)
+	Mul(x0, x0, x)
+	Sqr(z, x0)
+	Sqr(z, z)
+	Sqr(z, z)
+	Mul(z, z, x0)
+	Sqr(x1, z)
+	for i := 0; i < 5; i++ {
+		Sqr(x1, x1)
+	}
+	Mul(x1, x1, z)
+	Sqr(z, x1)
+	for i := 0; i < 11; i++ {
+		Sqr(z, z)
+	}
+	Mul(z, z, x1)
+	Sqr(z, z)
+	Sqr(z, z)
+	Sqr(z, z)
+	Mul(z, z, x0)
+	Sqr(x1, z)
+	for i := 0; i < 26; i++ {
+		Sqr(x1, x1)
+	}
+	Mul(x1, x1, z)
+	Sqr(z, x1)
+	for i := 0; i < 53; i++ {
+		Sqr(z, z)
+	}
+	Mul(z, z, x1)
+	Sqr(z, z)
+	Sqr(z, z)
+	Sqr(z, z)
+	Mul(z, z, x0)
+	Sqr(x1, z)
+	for i := 0; i < 110; i++ {
+		Sqr(x1, x1)
+	}
+	Mul(x1, x1, z)
+	Sqr(z, x1)
+	Mul(z, z, x)
+	for i := 0; i < 223; i++ {
+		Sqr(z, z)
+	}
+	Mul(z, z, x1)
+}
+
+// Cmov assigns y to x if n is 1.
+func Cmov(x, y *Elt, n uint) { cmov(x, y, n) }
+
+// Cswap interchanges x and y if n is 1.
+func Cswap(x, y *Elt, n uint) { cswap(x, y, n) }
+
+// Add calculates z = x+y mod p.
+func Add(z, x, y *Elt) { add(z, x, y) }
+
+// Sub calculates z = x-y mod p.
+func Sub(z, x, y *Elt) { sub(z, x, y) }
+
+// AddSub calculates (x,y) = (x+y mod p, x-y mod p).
+func AddSub(x, y *Elt) { addsub(x, y) }
+
+// Mul calculates z = x*y mod p.
+func Mul(z, x, y *Elt) { mul(z, x, y) }
+
+// Sqr calculates z = x^2 mod p.
+func Sqr(z, x *Elt) { sqr(z, x) }

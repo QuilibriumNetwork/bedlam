@@ -1,0 +1,37 @@
+package bloom
+
+func Intersect(left []byte, right []byte) bool {
+  count := 0
+  var b byte
+  for i := 0; i < len(left); i++ {
+    b = left[i] & right[i]
+
+    if b & 1 == 1 {
+      count++
+    }
+    if b >> 1 & 1 == 1 {
+      count++
+    }
+    if b >> 2 & 1 == 1 {
+      count++
+    }
+    if b >> 3 & 1 == 1 {
+      count++
+    }
+    if b >> 4 & 1 == 1 {
+      count++
+    }
+    if b >> 5 & 1 == 1 {
+      count++
+    }
+    if b >> 6 & 1 == 1 {
+      count++
+    }
+    if b >> 7 & 1 == 1 {
+      count++
+    }
+  }
+
+  result := count > 3
+  return result
+}

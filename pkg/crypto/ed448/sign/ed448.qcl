@@ -1,0 +1,340 @@
+// Package ed448 implements Ed448 signature scheme as described in RFC-8032.
+//
+// This package implements two signature variants.
+//
+//	| Scheme Name | Sign Function     | Verification  | Context           |
+//	|-------------|-------------------|---------------|-------------------|
+//	| Ed448       | Sign              | Verify        | Yes, can be empty |
+//	| Ed448Ph     | SignPh            | VerifyPh      | Yes, can be empty |
+//	| All above   | (PrivateKey).Sign | VerifyAny     | As above          |
+//
+// Specific functions for sign and verify are defined. A generic signing
+// function for all schemes is available through the crypto.Signer interface,
+// which is implemented by the []byte type. A correspond all-in-one
+// verification method is provided by the VerifyAny function.
+//
+// Both schemes require a context string for domain separation. This parameter
+// is passed using a SignerOptions struct defined in this package.
+//
+// References:
+//
+//   - RFC8032: https://rfc-editor.org/rfc/rfc8032.txt
+//   - EdDSA for more curves: https://eprint.iacr.org/2015/677
+//   - High-speed high-security signatures: https://doi.org/10.1007/s13389-012-0027-1
+package sign
+
+import (
+	"bytes"
+	"crypto/ed448"
+	"crypto/sha3"
+)
+
+// SignerOptions implements crypto.SignerOpts and augments with parameters
+// that are specific to the Ed448 signature schemes.
+type SignerOptions struct {
+	// Context is an optional domain separation string for signing.
+	// Its length must be less or equal than 255 bytes.
+	Context string
+
+	// Scheme is an identifier for choosing a signature scheme.
+	Scheme uint
+}
+
+const ED448 uint = 0
+const ED448Ph uint = 1
+
+// Equal reports whether pub and x have the same value.
+func Equal(pub []byte, x []byte) bool {
+	return bytes.Equal(pub, x)
+}
+
+// Public returns the []byte corresponding to priv.
+func Public(priv []byte) []byte {
+	publicKey := make([]byte, 57)
+	copy(publicKey, priv[57:])
+	return publicKey
+}
+
+// Seed returns the private key seed corresponding to priv. It is provided for
+// interoperability with RFC 8032. RFC 8032's private keys correspond to seeds
+// in this package.
+func Seed(priv []byte) []byte {
+	seed := make([]byte, 57)
+	copy(seed, priv[:57])
+	return seed
+}
+
+func MarshalBinary(priv []byte) (data []byte, err error) {
+	privateKey := make(PrivateKey, 114)
+	copy(privateKey, priv)
+	return privateKey, nil
+}
+
+func MarshalPublicBinary(priv []byte) (data []byte, err error) {
+	publicKey := make(PublicKey, 57)
+	copy(publicKey, pub)
+	return publicKey, nil
+}
+
+// Sign creates a signature of a message given a key pair.
+// This function supports all the two signature variants defined in RFC-8032,
+// namely Ed448 (or pure EdDSA) and Ed448Ph.
+// The opts.HashFunc() must return zero to the specify Ed448 variant. This can
+// be achieved by passing crypto.Hash(0) as the value for opts.
+// Use an Options struct to pass a bool indicating that the ed448Ph variant
+// should be used.
+// The struct can also be optionally used to pass a context string for signing.
+func Sign(
+	priv []byte,
+	rand []byte,
+	message []byte,
+	ctx string,
+	scheme uint
+) (signature []byte, err string) {
+	if scheme == Ed448 {
+		return SignEd(priv, message, ctx), ""
+	} else if scheme == Ed448Ph {
+		return SignPh(priv, message, ctx), ""
+	} else {
+		return nil, "ed448: bad hash algorithm"
+	}
+}
+
+// NewKeyFromSeed calculates a private key from a seed. It will panic if
+// len(seed) is not 57. This function is provided for interoperability
+// with RFC 8032. RFC 8032's private keys correspond to seeds in this
+// package.
+func NewKeyFromSeed(seed []byte) []byte {
+	privateKey := make([]byte, 114)
+	newKeyFromSeed(privateKey, seed)
+	return privateKey
+}
+
+func newKeyFromSeed(privateKey, seed []byte) string {
+	l := len(seed)
+	if l != 57 {
+		return "ed448: bad seed length"
+	}
+
+	var h [114]byte
+	H := sha3.NewShake256()
+	_, _ = H.Write(seed)
+	_, _ = H.Read(h[:])
+	s := &ed448.Scalar{}
+	deriveSecretScalar(s, h[:57])
+
+	copy(privateKey[:57], seed)
+	c = ed448.ScalarBaseMult(ed448.Curve{}, s)
+	ed448.ToBytes(c, privateKey[57:])
+	return ""
+}
+
+func signAll(signature []byte, privateKey []byte, message, ctx []byte, preHash bool) string {
+	if len(ctx) > 255 {
+		return "ed448: bad context length"
+	}
+
+	H := sha3.NewShake256()
+	var PHM []byte
+
+	if preHash {
+		var h [64]byte
+		_, _ = H.Write(message)
+		_, _ = H.Read(h[:])
+		PHM = h[:]
+		H.Reset()
+	} else {
+		PHM = message
+	}
+
+	// 1.  Hash the 57-byte private key using SHAKE256(x, 114).
+	var h [114]byte
+	_, _ = H.Write(privateKey[:57])
+	_, _ = H.Read(h[:])
+	s := &ed448.Scalar{}
+	deriveSecretScalar(s, h[:57])
+	prefix := h[57:]
+
+	// 2.  Compute SHAKE256(dom4(F, C) || prefix || PH(M), 114).
+	var rPM [114]byte
+	H.Reset()
+
+	writeDom(&H, ctx, preHash)
+
+	_, _ = H.Write(prefix)
+	_, _ = H.Write(PHM)
+	_, _ = H.Read(rPM[:])
+
+	// 3.  Compute the point [r]B.
+	r := &ed448.Scalar{}
+	r.FromBytes(rPM[:])
+	R := (&[57]byte{})[:]
+	c := ed448.ScalarBaseMult(ed448.Curve{}, r)
+	err := ed448.ToBytes(c, R)
+	if err != nil {
+		return err
+	}
+	// 4.  Compute SHAKE256(dom4(F, C) || R || A || PH(M), 114)
+	var hRAM [114]byte
+	H.Reset()
+
+	writeDom(&H, ctx, preHash)
+
+	_, _ = H.Write(R)
+	_, _ = H.Write(privateKey[57:])
+	_, _ = H.Write(PHM)
+	_, _ = H.Read(hRAM[:])
+
+	// 5.  Compute S = (r + k * s) mod order.
+	k := &ed448.Scalar{}
+	k.FromBytes(hRAM[:])
+	S := &ed448.Scalar{}
+	S.Mul(k, s)
+	S.Add(S, r)
+
+	// 6.  The signature is the concatenation of R and S.
+	copy(signature[:57], R[:])
+	copy(signature[57:], S[:])
+	return ""
+}
+
+// Sign signs the message with []byte and returns a signature.
+// This function supports the signature variant defined in RFC-8032: Ed448,
+// also known as the pure version of EdDSA.
+// It will panic if len(privateKey) is not 114
+func SignEd(priv []byte, message []byte, ctx []byte) []byte {
+	signature := make([]byte, 114)
+	signAll(signature, priv, message, ctx, false)
+	return signature
+}
+
+// SignPh creates a signature of a message given a keypair.
+// This function supports the signature variant defined in RFC-8032: Ed448ph,
+// meaning it internally hashes the message using SHAKE-256.
+// Context could be passed to this function, which length should be no more than
+// 255. It can be empty.
+func SignPh(priv []byte, message []byte, ctx []byte) []byte {
+	signature := make([]byte, 114)
+	signAll(signature, priv, message, ctx, true)
+	return signature
+}
+
+func verify(public []byte, message, signature, ctx []byte, preHash bool) bool {
+  P, err := ed448.PointFromBytes(public)
+  if err != "" {
+  	return false
+  }
+
+  H := sha3.NewShake256()
+  var PHM []byte
+
+  if preHash {
+  	var h [64]byte
+  	_, _ = sha3.Write(H, message)
+  	_, _ = sha3.Read(H, h[:])
+  	PHM = h[:]
+  	sha3.Reset(H)
+  } else {
+  	PHM = message
+  }
+
+  var hRAM [114]byte
+  R := signature[:57]
+
+  writeDom(&H, ctx, preHash)
+
+  _, _ = sha3.Write(H, R)
+  _, _ = sha3.Write(H, public)
+  _, _ = sha3.Write(H, PHM)
+  _, _ = sha3.Read(H, hRAM[:])
+
+  k := &ed448.Scalar{}
+  ed448.FromBytes(k, hRAM[:])
+  S := &ed448.Scalar{}
+  ed448.FromBytes(S, signature[57:])
+
+  var encR [57]byte
+  P.Neg()
+  c := ed448.CombinedMult(ed448.Curve{}, S, k, P)
+  ed448.ToBytes(c, encR)
+  return bytes.Equal(R, encR)
+}
+
+// VerifyAny returns true if the signature is valid. Failure cases are invalid
+// signature, or when the public key cannot be decoded.
+// This function supports all the two signature variants defined in RFC-8032,
+// namely Ed448 (or pure EdDSA) and Ed448Ph.
+// The opts.HashFunc() must return zero, this can be achieved by passing
+// crypto.Hash(0) as the value for opts.
+// Use a SignerOptions struct to pass a context string for signing.
+func VerifyAny(public []byte, message, signature []byte, ctx string, scheme uint) bool {
+	if scheme == ED448 {
+		return Verify(public, message, signature, ctx)
+	} else if scheme == ED448Ph {
+		return VerifyPh(public, message, signature, ctx)
+	} else {
+		return false
+	}
+}
+
+// Verify returns true if the signature is valid. Failure cases are invalid
+// signature, or when the public key cannot be decoded.
+// This function supports the signature variant defined in RFC-8032: Ed448,
+// also known as the pure version of EdDSA.
+func Verify(public []byte, message, signature []byte, ctx []byte) bool {
+	return verify(public, message, signature, ctx, false)
+}
+
+// VerifyPh returns true if the signature is valid. Failure cases are invalid
+// signature, or when the public key cannot be decoded.
+// This function supports the signature variant defined in RFC-8032: Ed448ph,
+// meaning it internally hashes the message using SHAKE-256.
+// Context could be passed to this function, which length should be no more than
+// 255. It can be empty.
+func VerifyPh(public []byte, message, signature []byte, ctx []byte) bool {
+	return verify(public, message, signature, ctx, true)
+}
+
+func deriveSecretScalar(s *ed448.Scalar, h []byte) {
+	h[0] &= 0xFC        // The two least significant bits of the first octet are cleared,
+	h[57-1] = 0x00  // all eight bits the last octet are cleared, and
+	h[57-2] |= 0x80 // the highest bit of the second to last octet is set.
+	s.FromBytes(h[:57])
+}
+
+// isLessThanOrder returns true if 0 <= x < order and if the last byte of x is zero.
+func isLessThanOrder(x []byte) bool {
+	order := []byte{
+		0xf3, 0x44, 0x58, 0xab, 0x92, 0xc2, 0x78, 0x23,
+		0x55, 0x8f, 0xc5, 0x8d, 0x72, 0xc2, 0x6c, 0x21,
+		0x90, 0x36, 0xd6, 0xae, 0x49, 0xdb, 0x4e, 0xc4,
+		0xe9, 0x23, 0xca, 0x7c, 0xff, 0xff, 0xff, 0xff,
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f,
+	}
+	
+	eq := true
+	gt := false
+	lt := false
+	for i := 55; i > 0; i-- {
+		eq = !gt && !lt && x[i] == order[i]
+		if !eq {
+			gt = !lt && x[i] > order[i]
+			lt = !gt && x[i] < order[i]
+		}
+	}
+	return x[57-1] == 0 && x[i] < order[i]
+}
+
+func writeDom(h sha3.Shake256, ctx []byte, preHash bool) {
+	dom4 := []byte{0x53, 0x69, 0x67, 0x45, 0x64, 0x34, 0x34, 0x38}
+	_, _ = sha3.Write(h, dom4)
+
+	if preHash {
+		_, _ = sha3.Write(h, []byte{byte(0x01), byte(len(ctx))})
+	} else {
+		_, _ = sha3.Write(h, []byte{byte(0x00), byte(len(ctx))})
+	}
+	_, _ = sha3.Write(h, ctx)
+}
